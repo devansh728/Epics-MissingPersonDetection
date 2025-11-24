@@ -1,0 +1,132 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Database Files
+*.db
+*.sqlite
+*.sqlite3
+face_db.sqlite
+missing_persons.db
+
+# Model Files (large files)
+*.pt
+*.pth
+*.h5
+*.pkl
+*.onnx
+yolov8n.pt
+
+# Output and Temporary Files
+output_frames/
+reports/
+uploads/
+*.log
+*.tmp
+
+# Video Files (can be large)
+*.mp4
+*.avi
+*.mov
+*.mkv
+cctv_footage/
+
+# Image Files (uploaded/generated)
+target-person.jpg
+*.jpg
+*.jpeg
+*.png
+*.gif
+# But keep example images if needed
+!example_*.jpg
+!example_*.png
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Documentation
+docs/_build/
+site/
+
+# OS Files
+Thumbs.db
+.DS_Store
+*.bak
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Backup Files
+*.backup
+*.old
+
+# Compiled Files
+*.pyc
+*.pyo
+
+# Package Manager
+pip-log.txt
+pip-delete-this-directory.txt
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
