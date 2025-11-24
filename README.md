@@ -48,7 +48,7 @@ Google Gemini API key
 
 1. **Clone the repository**
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/devansh728/Epics-MissingPersonDetection.git
 cd missing
 ```
 
