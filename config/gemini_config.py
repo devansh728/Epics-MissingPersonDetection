@@ -1,6 +1,7 @@
 """
 Gemini API Configuration for NLP Tasks
 """
+
 import os
 from typing import Optional
 
@@ -8,8 +9,9 @@ from typing import Optional
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # Model Selection
-GEMINI_TEXT_MODEL = "gemini-pro"
-GEMINI_VISION_MODEL = "gemini-pro-vision"
+GEMINI_TEXT_MODEL = "models/gemini-2.5-flash"
+GEMINI_VISION_MODEL = "models/gemini-2.5-pro"
+
 
 # Retry Configuration
 MAX_RETRIES = 3
@@ -78,6 +80,7 @@ Transcribe the following audio content accurately.
 Focus on clarity and include all spoken words.
 """
 
+
 def get_gemini_api_key() -> Optional[str]:
     """
     Get Gemini API key from environment variable.
@@ -85,13 +88,24 @@ def get_gemini_api_key() -> Optional[str]:
     """
     api_key = os.getenv("GEMINI_API_KEY", GEMINI_API_KEY)
     if not api_key or api_key == "":
-        print("[WARNING] GEMINI_API_KEY not configured. Falling back to simple methods.")
+        print(
+            "[WARNING] GEMINI_API_KEY not configured. Falling back to simple methods."
+        )
         return None
     return api_key
+
+
+def print_available_models():
+    models = genai.list_models()
+    print("=== AVAILABLE GEMINI MODELS ===")
+    for m in models:
+        print(m.name)
+
 
 def is_gemini_configured() -> bool:
     """Check if Gemini API is properly configured."""
     return get_gemini_api_key() is not None
+
 
 def get_model_config():
     """Get Gemini model configuration."""
@@ -100,5 +114,5 @@ def get_model_config():
         "vision_model": GEMINI_VISION_MODEL,
         "max_retries": MAX_RETRIES,
         "retry_delay": RETRY_DELAY_SECONDS,
-        "timeout": REQUEST_TIMEOUT
+        "timeout": REQUEST_TIMEOUT,
     }

@@ -15,15 +15,17 @@ from deepface import DeepFace
 # -------------
 # Config
 # -------------
-YOLO_MODEL = "yolov8n.pt"         # small and fast
+YOLO_MODEL = "yolov8n.pt"  # small and fast
 DB_PATH = "face_db.sqlite"
 OUTPUT_DIR = "output_frames"
 DETECTED_DIR = os.path.join(OUTPUT_DIR, "detected_people")
 MATCHED_DIR = os.path.join(OUTPUT_DIR, "matches")
-FRAME_SAVE_EVERY = 30             # save a detected-person crop every N frames (for debugging)
-FRAME_SKIP = 1                    # process every FRAME_SKIP-th frame (1 = all frames)
-SIMILARITY_THRESHOLD = 0.55       # cosine similarity threshold for Facenet512
-MAX_PERSON_BOX_AREA_RATIO = 0.95  # ignore boxes that are almost full frame (can be false person)
+FRAME_SAVE_EVERY = 30  # save a detected-person crop every N frames (for debugging)
+FRAME_SKIP = 5  # process every FRAME_SKIP-th frame (1 = all frames)
+SIMILARITY_THRESHOLD = 0.55  # cosine similarity threshold for Facenet512
+MAX_PERSON_BOX_AREA_RATIO = (
+    0.95  # ignore boxes that are almost full frame (can be false person)
+)
 
 
 # -------------
@@ -38,13 +40,15 @@ def ensure_dirs():
 def init_database(db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS persons (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE,
             embedding BLOB
         )
-    """)
+    """
+    )
     conn.commit()
     return conn
 
@@ -52,7 +56,10 @@ def init_database(db_path=DB_PATH):
 def save_embedding(conn, name, embedding: np.ndarray):
     cur = conn.cursor()
     emb_bytes = embedding.astype(np.float32).tobytes()
-    cur.execute("INSERT OR REPLACE INTO persons (name, embedding) VALUES (?, ?)", (name, emb_bytes))
+    cur.execute(
+        "INSERT OR REPLACE INTO persons (name, embedding) VALUES (?, ?)",
+        (name, emb_bytes),
+    )
     conn.commit()
 
 
@@ -84,43 +91,73 @@ def get_face_embedding_from_image(img_bgr):
     """
     Input: BGR numpy image (cropped face or full image)
     Returns: 512-dim embedding (np.float32) or None
-    We first attempt to extract faces (DeepFace.extract_faces). If no face found,
-    fallback by trying DeepFace.represent with enforce_detection=False (less strict).
+    Uses multiple fallback strategies to extract face embeddings even from challenging images.
     """
+    # Strategy 1: Try with opencv detector (fast, less strict)
     try:
-        # DeepFace.extract_faces expects RGB; but it accepts BGR as well in some versions.
-        # We'll pass the BGR image directly and specify detector_backend='opencv'.
-        # It returns list of dicts with 'face' and 'facial_area'.
-        faces = DeepFace.extract_faces(img_path=img_bgr, detector_backend="opencv", enforce_detection=True)
-    except Exception:
-        faces = []
+        faces = DeepFace.extract_faces(
+            img_path=img_bgr,
+            detector_backend="opencv",
+            enforce_detection=False,  # More lenient
+            align=True,
+        )
 
-    if faces and len(faces) > 0:
-        # choose largest detected face crop
-        face_candidates = []
-        for f in faces:
-            face_img = f.get("face")
-            area = 0
-            fa = f.get("facial_area")
-            if fa:
-                area = fa.get("w", 0) * fa.get("h", 0)
-            face_candidates.append((area, face_img))
-        face_candidates.sort(key=lambda x: x[0], reverse=True)
-        chosen_face = face_candidates[0][1]
-        try:
-            rep = DeepFace.represent(img_path=chosen_face, model_name="Facenet512", enforce_detection=True)
-            emb = np.array(rep[0]["embedding"], dtype=np.float32)
-            return emb
-        except Exception:
-            return None
-    else:
-        # fallback: try represent with enforce_detection=False (may return embedding even for small/no-face)
-        try:
-            rep = DeepFace.represent(img_path=img_bgr, model_name="Facenet512", enforce_detection=False)
-            emb = np.array(rep[0]["embedding"], dtype=np.float32)
-            return emb
-        except Exception:
-            return None
+        if faces and len(faces) > 0:
+            # Choose largest detected face
+            face_candidates = []
+            for f in faces:
+                face_img = f.get("face")
+                area = 0
+                fa = f.get("facial_area")
+                if fa:
+                    area = fa.get("w", 0) * fa.get("h", 0)
+                face_candidates.append((area, face_img))
+
+            face_candidates.sort(key=lambda x: x[0], reverse=True)
+            chosen_face = face_candidates[0][1]
+
+            try:
+                rep = DeepFace.represent(
+                    img_path=chosen_face,
+                    model_name="Facenet512",
+                    enforce_detection=False,
+                )
+                emb = np.array(rep[0]["embedding"], dtype=np.float32)
+                print(f"[INFO] Successfully extracted face embedding (opencv detector)")
+                return emb
+            except Exception as e:
+                print(f"[WARNING] Failed to get embedding from extracted face: {e}")
+    except Exception as e:
+        print(f"[WARNING] Face extraction failed: {e}")
+
+    # Strategy 2: Try direct representation with retinaface (more accurate)
+    try:
+        rep = DeepFace.represent(
+            img_path=img_bgr,
+            model_name="Facenet512",
+            detector_backend="retinaface",
+            enforce_detection=False,
+        )
+        emb = np.array(rep[0]["embedding"], dtype=np.float32)
+        print(f"[INFO] Successfully extracted face embedding (retinaface detector)")
+        return emb
+    except Exception as e:
+        print(f"[WARNING] Retinaface detection failed: {e}")
+
+    # Strategy 3: Final fallback - use opencv with no enforcement
+    try:
+        rep = DeepFace.represent(
+            img_path=img_bgr,
+            model_name="Facenet512",
+            detector_backend="opencv",
+            enforce_detection=False,
+        )
+        emb = np.array(rep[0]["embedding"], dtype=np.float32)
+        print(f"[INFO] Successfully extracted face embedding (fallback opencv)")
+        return emb
+    except Exception as e:
+        print(f"[ERROR] All face detection strategies failed: {e}")
+        return None
 
 
 # -------------
@@ -141,8 +178,14 @@ def surveillance_yolo_deepface(target_image_path, video_path):
 
     target_emb = get_face_embedding_from_image(target_bgr)
     if target_emb is None:
-        print("[ERROR] Could not extract embedding from target image. Make sure target image has a clear face.")
-        return {"success": False, "error": "Could not extract embedding from target image", "matches": []}
+        print(
+            "[ERROR] Could not extract embedding from target image. Make sure target image has a clear face."
+        )
+        return {
+            "success": False,
+            "error": "Could not extract embedding from target image",
+            "matches": [],
+        }
 
     save_embedding(conn, "target_person", target_emb)
     print("[OK] Target embedding saved to DB.")
@@ -150,13 +193,21 @@ def surveillance_yolo_deepface(target_image_path, video_path):
     stored_emb = load_embedding(conn, "target_person")
     if stored_emb is None:
         print("[ERROR] Failed to load stored embedding from DB.")
-        return {"success": False, "error": "Failed to load stored embedding from DB", "matches": []}
+        return {
+            "success": False,
+            "error": "Failed to load stored embedding from DB",
+            "matches": [],
+        }
 
     # open video
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"[ERROR] Failed to open video: {video_path}")
-        return {"success": False, "error": f"Failed to open video: {video_path}", "matches": []}
+        return {
+            "success": False,
+            "error": f"Failed to open video: {video_path}",
+            "matches": [],
+        }
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
     print(f"[INFO] Video opened. FPS={fps:.2f}")
@@ -182,7 +233,9 @@ def surveillance_yolo_deepface(target_image_path, video_path):
 
         # Run YOLO detection (person class id = 0)
         # ultralytics returns results; use model.predict or model(frame)
-        results = model(frame, imgsz=640, conf=0.25, iou=0.45)  # adjust conf threshold if needed
+        results = model(
+            frame, imgsz=640, conf=0.25, iou=0.45
+        )  # adjust conf threshold if needed
         # results is list-like; take first
         try:
             dets = results[0].boxes.cpu().numpy()
@@ -200,9 +253,12 @@ def surveillance_yolo_deepface(target_image_path, video_path):
                 if cls != 0:
                     continue
                 # clamp
-                x1 = max(0, x1); y1 = max(0, y1)
-                x2 = min(w - 1, x2); y2 = min(h - 1, y2)
-                box_w = x2 - x1; box_h = y2 - y1
+                x1 = max(0, x1)
+                y1 = max(0, y1)
+                x2 = min(w - 1, x2)
+                y2 = min(h - 1, y2)
+                box_w = x2 - x1
+                box_h = y2 - y1
                 # filter suspiciously big boxes (full-frame false positives)
                 if (box_w * box_h) > (w * h * MAX_PERSON_BOX_AREA_RATIO):
                     continue
@@ -223,7 +279,9 @@ def surveillance_yolo_deepface(target_image_path, video_path):
 
             # Save some detected crops for debugging
             if (frame_idx - last_save_idx) >= FRAME_SAVE_EVERY:
-                fname = os.path.join(DETECTED_DIR, f"frame{frame_idx}_person{pid+1}.jpg")
+                fname = os.path.join(
+                    DETECTED_DIR, f"frame{frame_idx}_person{pid+1}.jpg"
+                )
                 cv2.imwrite(fname, crop)
                 last_save_idx = frame_idx
                 print(f"    [SAVE] Saved detected person crop: {fname}")
@@ -231,35 +289,51 @@ def surveillance_yolo_deepface(target_image_path, video_path):
             # Attempt face embedding on the person crop
             emb = get_face_embedding_from_image(crop)
             if emb is None:
-                print(f"    > Person #{pid+1}: No face found inside person box (or embedding failed).")
+                print(
+                    f"    > Person #{pid+1}: No face found inside person box (or embedding failed)."
+                )
                 continue
 
             similarity = cosine_similarity(stored_emb, emb)
-            print(f"    > Person #{pid+1} embedding similarity = {similarity:.4f} (conf={conf:.2f})")
+            print(
+                f"    > Person #{pid+1} embedding similarity = {similarity:.4f} (conf={conf:.2f})"
+            )
 
             if similarity >= SIMILARITY_THRESHOLD:
                 found_any = True
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
-                match_fname = os.path.join(MATCHED_DIR, f"match_frame{frame_idx}_person{pid+1}_{timestamp}.jpg")
+                match_fname = os.path.join(
+                    MATCHED_DIR, f"match_frame{frame_idx}_person{pid+1}_{timestamp}.jpg"
+                )
                 # draw bounding box + label on original frame
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f"MATCH {similarity:.2f}",
-                            (x1, max(0, y1 - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                cv2.putText(
+                    frame,
+                    f"MATCH {similarity:.2f}",
+                    (x1, max(0, y1 - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (0, 255, 0),
+                    2,
+                )
                 cv2.imwrite(match_fname, frame)
-                
+
                 # Store match information
-                matches.append({
-                    "frame": frame_idx,
-                    "person_id": pid + 1,
-                    "similarity": round(similarity, 4),
-                    "confidence": round(conf, 2),
-                    "image_path": match_fname,
-                    "timestamp": timestamp
-                })
-                
+                matches.append(
+                    {
+                        "frame": frame_idx,
+                        "person_id": pid + 1,
+                        "similarity": round(similarity, 4),
+                        "confidence": round(conf, 2),
+                        "image_path": match_fname,
+                        "timestamp": timestamp,
+                    }
+                )
+
                 print("\n========== MATCH FOUND ==========")
-                print(f"  Frame: {frame_idx}, Person #{pid+1}, Similarity: {similarity:.4f}")
+                print(
+                    f"  Frame: {frame_idx}, Person #{pid+1}, Similarity: {similarity:.4f}"
+                )
                 print(f"  Saved matched frame to: {match_fname}")
                 print("=================================\n")
                 # optional: break if you want to stop at first match
@@ -271,7 +345,13 @@ def surveillance_yolo_deepface(target_image_path, video_path):
         maxw = 1000
         if display_frame.shape[1] > maxw:
             scale = maxw / display_frame.shape[1]
-            display_frame = cv2.resize(display_frame, (int(display_frame.shape[1]*scale), int(display_frame.shape[0]*scale)))
+            display_frame = cv2.resize(
+                display_frame,
+                (
+                    int(display_frame.shape[1] * scale),
+                    int(display_frame.shape[0] * scale),
+                ),
+            )
         cv2.imshow("Surveillance (press q to quit)", display_frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             print("[INFO] Exiting on user request.")
@@ -285,19 +365,22 @@ def surveillance_yolo_deepface(target_image_path, video_path):
     conn.close()
 
     if found_any:
-        print("\n[SUCCESS] One or more matches were found. Check the `output_frames/matches` folder.")
+        print(
+            "\n[SUCCESS] One or more matches were found. Check the `output_frames/matches` folder."
+        )
     else:
-        print("\n[INFO] Target person NOT found in the video. Check `output_frames/detected_people` for crops to debug.")
+        print(
+            "\n[INFO] Target person NOT found in the video. Check `output_frames/detected_people` for crops to debug."
+        )
     print("[INFO] Done.")
-    
+
     # Return results
     return {
         "success": True,
         "matches_found": len(matches),
         "matches": matches,
-        "total_frames": frame_idx
+        "total_frames": frame_idx,
     }
-
 
 
 # -------------
@@ -305,12 +388,32 @@ def surveillance_yolo_deepface(target_image_path, video_path):
 # -------------
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="YOLOv8 + DeepFace surveillance")
-    parser.add_argument("--target", type=str, default="target-person.jpg", help="Path to target person image")
-    parser.add_argument("--video", type=str, default="yest-video.mp4", help="Path to input video")
-    parser.add_argument("--yolo", type=str, default=YOLO_MODEL, help="YOLO model name or .pt path")
-    parser.add_argument("--thresh", type=float, default=SIMILARITY_THRESHOLD, help="Cosine similarity threshold")
-    parser.add_argument("--skip", type=int, default=FRAME_SKIP, help="Frame skip (process every Nth frame)")
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="target-person.jpg",
+        help="Path to target person image",
+    )
+    parser.add_argument(
+        "--video", type=str, default="yest-video.mp4", help="Path to input video"
+    )
+    parser.add_argument(
+        "--yolo", type=str, default=YOLO_MODEL, help="YOLO model name or .pt path"
+    )
+    parser.add_argument(
+        "--thresh",
+        type=float,
+        default=SIMILARITY_THRESHOLD,
+        help="Cosine similarity threshold",
+    )
+    parser.add_argument(
+        "--skip",
+        type=int,
+        default=FRAME_SKIP,
+        help="Frame skip (process every Nth frame)",
+    )
     args = parser.parse_args()
 
     # update config from args

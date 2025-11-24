@@ -1,6 +1,9 @@
 """
 Email Configuration for Gmail SMTP Notifications
 """
+import os
+from dotenv import load_dotenv
+load_dotenv()    
 
 # Gmail SMTP Configuration
 SMTP_SERVER = "smtp.gmail.com"
@@ -8,8 +11,8 @@ SMTP_PORT = 587
 
 # Email credentials (to be set by user)
 # For security, use environment variables or config file
-SENDER_EMAIL = "your-email@gmail.com"  # Replace with actual email
-SENDER_PASSWORD = "your-app-password"  # Use Gmail App Password, not regular password
+SENDER_EMAIL = os.getenv("SENDER_EMAIL")  # Replace with actual email
+SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")  # Use Gmail App Password, not regular password
 
 # Email Templates
 MATCH_FOUND_SUBJECT = "🚨 ALERT: Potential Match Found - Case #{case_id}"
