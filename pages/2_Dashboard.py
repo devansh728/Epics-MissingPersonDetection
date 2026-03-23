@@ -90,6 +90,27 @@ if not df.empty:
             for idx, report in reports.iterrows():
                 st.success(f"🔗 Report #{report['id']}\n\n**Hash:** `{report['blockchain_hash']}`\n\n**Time:** {report['timestamp']}")
         
+        # Show Match Logs if any
+        matches_df = pd.read_sql("SELECT * FROM match_logs WHERE case_id = ? ORDER BY timestamp DESC", conn, params=(selected_case_id,))
+        if not matches_df.empty:
+            st.markdown("---")
+            st.markdown("#### Detected Matches")
+            if 'match_type' in matches_df.columns:
+                match_display = matches_df[['timestamp', 'cctv_location_id', 'score', 'match_type']].copy()
+                match_display.columns = ['Time', 'CCTV ID', 'Similarity Score', 'Match Type']
+                match_display['Match Type'] = match_display['Match Type'].str.upper()
+            else:
+                match_display = matches_df[['timestamp', 'cctv_location_id', 'score']].copy()
+                match_display.columns = ['Time', 'CCTV ID', 'Similarity Score']
+            st.dataframe(match_display)
+            
+            st.markdown("**Matched Frames:**")
+            cols = st.columns(3)
+            for i, row in matches_df.iterrows():
+                if row['saved_img_path'] and os.path.exists(row['saved_img_path']):
+                    m_type = f" - {row.get('match_type', 'FACE').upper()}" if 'match_type' in row else ""
+                    cols[i % 3].image(row['saved_img_path'], caption=f"Match{m_type} {row['score']:.2f} at CCTV #{row['cctv_location_id']}", width=200)
+
         # Show scan tasks and progress
         st.markdown("---")
         st.markdown("#### CCTV Scan Tasks")

@@ -43,6 +43,7 @@ def init_db():
             transcript TEXT,
             emotion TEXT,
             image_path TEXT,
+            gait_model_path TEXT,
             email TEXT,
             status TEXT DEFAULT 'Active'
         )
@@ -70,6 +71,7 @@ def init_db():
             frame_number INTEGER,
             score REAL,
             saved_img_path TEXT,
+            match_type TEXT DEFAULT 'face',
             cctv_location_id INTEGER,
             geohash TEXT,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

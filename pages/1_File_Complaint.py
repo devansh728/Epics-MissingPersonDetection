@@ -58,6 +58,9 @@ with st.form("complaint_form"):
         uploaded_photo = st.file_uploader(
             "Upload Recent Photo *", type=["jpg", "jpeg", "png"]
         )
+        gait_video = st.file_uploader(
+            "Upload Walking Video (Optional - for Gait Match)", type=["mp4", "avi", "mov"]
+        )
         voice_note = st.file_uploader(
             "Upload Voice Note (Optional)", type=["wav", "mp3", "ogg"]
         )
@@ -79,6 +82,12 @@ with st.form("complaint_form"):
                 voice_path = os.path.join("uploads", voice_note.name)
                 with open(voice_path, "wb") as f:
                     f.write(voice_note.getbuffer())
+
+            gait_video_path = None
+            if gait_video:
+                gait_video_path = os.path.join("uploads", gait_video.name)
+                with open(gait_video_path, "wb") as f:
+                    f.write(gait_video.getbuffer())
 
             # Parse location
             lat, lon = None, None
@@ -110,6 +119,7 @@ with st.form("complaint_form"):
                 "description": description,
                 "photo_path": photo_path,
                 "voice_path": voice_path,
+                "gait_video_path": gait_video_path,
                 "last_seen_lat": lat,
                 "last_seen_lon": lon,
                 "email": email,
@@ -166,8 +176,8 @@ with st.form("complaint_form"):
                 c.execute(
                     """
                     INSERT INTO missing_cases (name, age, description, last_seen_geohash, last_seen_location, 
-                                              time_lost, transcript, emotion, image_path, email)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                              time_lost, transcript, emotion, image_path, gait_model_path, email)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         name,
@@ -179,6 +189,7 @@ with st.form("complaint_form"):
                         nlp.get("transcription", ""),
                         nlp.get("emotion", ""),
                         photo_path,
+                        gait_video_path,
                         email,
                     ),
                 )

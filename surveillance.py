@@ -9,8 +9,15 @@ import cv2
 import time
 import sqlite3
 import numpy as np
+import joblib
+import mediapipe as mp
+from collections import defaultdict
 from ultralytics import YOLO
 from deepface import DeepFace
+from utils.gait_utils import extract_frame_angles, build_gait_signature
+
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
 
 # -------------
 # Config
@@ -26,6 +33,8 @@ SIMILARITY_THRESHOLD = 0.55  # cosine similarity threshold for Facenet512
 MAX_PERSON_BOX_AREA_RATIO = (
     0.95  # ignore boxes that are almost full frame (can be false person)
 )
+FRAMES_NEEDED_FOR_GAIT = 30
+GAIT_MODEL_PATH = "gait_svm_model.pkl"
 
 
 # -------------
@@ -170,6 +179,17 @@ def surveillance_yolo_deepface(target_image_path, video_path):
     print("\n[INFO] Loading YOLOv8 model...")
     model = YOLO(YOLO_MODEL)  # will auto-download yolov8n weights if not present
 
+    print("[INFO] Attempting to load Gait Model...")
+    
+    try:
+        gait_classifier = joblib.load(GAIT_MODEL_PATH)
+        print("[INFO] Gait classifier loaded successfully.")
+    except Exception as e:
+        gait_classifier = None
+        print(f"[WARNING] No {GAIT_MODEL_PATH} found or load failed. Gait detection disabled. ({e})")
+        
+    gait_buffers = defaultdict(list)
+
     print("[INFO] Encoding target person image (DeepFace Facenet512).")
     target_bgr = cv2.imread(target_image_path)
     if target_bgr is None:
@@ -231,10 +251,10 @@ def surveillance_yolo_deepface(target_image_path, video_path):
         h, w = frame.shape[:2]
         print(f"\n[LOG] Frame {frame_idx} - size: {w}x{h}")
 
-        # Run YOLO detection (person class id = 0)
-        # ultralytics returns results; use model.predict or model(frame)
-        results = model(
-            frame, imgsz=640, conf=0.25, iou=0.45
+        # Run YOLO tracking (person class id = 0)
+        # ultralytics returns results; use model.track to persist IDs
+        results = model.track(
+            frame, imgsz=640, conf=0.25, iou=0.45, persist=True, tracker="botsort.yaml"
         )  # adjust conf threshold if needed
         # results is list-like; take first
         try:
@@ -249,6 +269,11 @@ def surveillance_yolo_deepface(target_image_path, video_path):
                 cls = int(box.cls.cpu().numpy()[0])
                 conf = float(box.conf.cpu().numpy()[0])
                 x1, y1, x2, y2 = map(int, box.xyxy.cpu().numpy()[0])
+                
+                track_id = None
+                if box.id is not None:
+                    track_id = int(box.id.cpu().numpy()[0])
+                    
                 # keep only person class (0)
                 if cls != 0:
                     continue
@@ -262,7 +287,7 @@ def surveillance_yolo_deepface(target_image_path, video_path):
                 # filter suspiciously big boxes (full-frame false positives)
                 if (box_w * box_h) > (w * h * MAX_PERSON_BOX_AREA_RATIO):
                     continue
-                persons.append((x1, y1, x2, y2, conf))
+                persons.append((x1, y1, x2, y2, conf, track_id))
 
         if len(persons) == 0:
             print("[LOG] No person boxes detected by YOLO in this frame.")
@@ -272,7 +297,7 @@ def surveillance_yolo_deepface(target_image_path, video_path):
         print(f"[LOG] YOLO detected {len(persons)} person(s).")
 
         # Examine each person crop for face + embedding
-        for pid, (x1, y1, x2, y2, conf) in enumerate(persons):
+        for pid, (x1, y1, x2, y2, conf, track_id) in enumerate(persons):
             crop = frame[y1:y2, x1:x2].copy()
             if crop.size == 0:
                 continue
@@ -287,19 +312,47 @@ def surveillance_yolo_deepface(target_image_path, video_path):
                 print(f"    [SAVE] Saved detected person crop: {fname}")
 
             # Attempt face embedding on the person crop
+            match_type = None
+            similarity = 0.0
             emb = get_face_embedding_from_image(crop)
-            if emb is None:
+            if emb is not None:
+                similarity = cosine_similarity(stored_emb, emb)
                 print(
-                    f"    > Person #{pid+1}: No face found inside person box (or embedding failed)."
+                    f"    > Person #{pid+1} (ID {track_id}) face similarity = {similarity:.4f} (conf={conf:.2f})"
                 )
-                continue
-
-            similarity = cosine_similarity(stored_emb, emb)
-            print(
-                f"    > Person #{pid+1} embedding similarity = {similarity:.4f} (conf={conf:.2f})"
-            )
-
-            if similarity >= SIMILARITY_THRESHOLD:
+                if similarity >= SIMILARITY_THRESHOLD:
+                    match_type = "face"
+            
+            if match_type is None:
+                # FALLBACK TO GAIT
+                print(f"    > Person #{pid+1} (ID {track_id}): Face failed or no match. Trying gait fallback.")
+                if gait_classifier is not None and track_id is not None:
+                    # Pad the box for MediaPipe to see the full body
+                    pad_w = int((x2 - x1) * 0.15)
+                    pad_h = int((y2 - y1) * 0.15)
+                    px1 = max(0, x1 - pad_w)
+                    py1 = max(0, y1 - pad_h)
+                    px2 = min(w - 1, x2 + pad_w)
+                    py2 = min(h - 1, y2 + pad_h)
+                    padded_crop = frame[py1:py2, px1:px2]
+                    
+                    if padded_crop.size > 0:
+                        rgb_crop = cv2.cvtColor(padded_crop, cv2.COLOR_BGR2RGB)
+                        pose_results = pose.process(rgb_crop)
+                        if pose_results.pose_landmarks:
+                            angles = extract_frame_angles(pose_results.pose_landmarks.landmark)
+                            gait_buffers[track_id].append(angles)
+                            
+                            if len(gait_buffers[track_id]) >= FRAMES_NEEDED_FOR_GAIT:
+                                sig = build_gait_signature(gait_buffers[track_id])
+                                pred = gait_classifier.predict([sig])
+                                if pred[0] == 1:
+                                    match_type = "gait"
+                                    similarity = 0.85 # High confidence surrogate for gait
+                                    print(f"    > [GAIT MATCH] Person #{pid+1} (ID {track_id}) gait signature matched!")
+                                gait_buffers[track_id].clear() # Reset buffer after check
+            
+            if match_type is not None:
                 found_any = True
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
                 match_fname = os.path.join(
@@ -309,7 +362,7 @@ def surveillance_yolo_deepface(target_image_path, video_path):
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(
                     frame,
-                    f"MATCH {similarity:.2f}",
+                    f"MATCH ({match_type.upper()}) {similarity:.2f}",
                     (x1, max(0, y1 - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.9,
@@ -327,12 +380,13 @@ def surveillance_yolo_deepface(target_image_path, video_path):
                         "confidence": round(conf, 2),
                         "image_path": match_fname,
                         "timestamp": timestamp,
+                        "match_type": match_type,
                     }
                 )
 
                 print("\n========== MATCH FOUND ==========")
                 print(
-                    f"  Frame: {frame_idx}, Person #{pid+1}, Similarity: {similarity:.4f}"
+                    f"  Frame: {frame_idx}, Person #{pid+1} (ID {track_id}), Type: {match_type.upper()}, Sim: {similarity:.4f}"
                 )
                 print(f"  Saved matched frame to: {match_fname}")
                 print("=================================\n")
@@ -393,11 +447,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--target",
         type=str,
-        default="target-person.jpg",
+        default="target.jpg",
         help="Path to target person image",
     )
     parser.add_argument(
-        "--video", type=str, default="yest-video.mp4", help="Path to input video"
+        "--video",
+        type=str,
+        default="cctv_footage/bhopal_junction.mp4",
+        help="Path to input video",
     )
     parser.add_argument(
         "--yolo", type=str, default=YOLO_MODEL, help="YOLO model name or .pt path"
