@@ -138,3 +138,6 @@ check_db.py
 checkGemini.py
 fix_timestamps.py
 video_split.py
+
+myenv
+yolov8n
